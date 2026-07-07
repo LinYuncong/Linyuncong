@@ -27,6 +27,10 @@ def follow(follower_id: int, following_id: int, show_reblogs: bool = True,
     if follower_id == following_id:
         raise ValueError("不能关注自己")
 
+    # 检查是否被封禁
+    if is_banned(follower_id):
+        return {"status": "banned", "message": "你已被封禁，无法关注"}
+
     # 检查是否被对方屏蔽，被屏蔽则无法关注
     blocked = conn.execute(
         "SELECT 1 FROM blocks WHERE user_id = ? AND blocked_id = ?",
@@ -226,6 +230,10 @@ def block(user_id: int, blocked_id: int) -> dict:
 
     if user_id == blocked_id:
         raise ValueError("不能屏蔽自己")
+
+    # 检查是否被封禁
+    if is_banned(user_id):
+        return {"status": "banned", "message": "你已被封禁，无法屏蔽"}
 
     try:
         conn.execute(
@@ -452,14 +460,18 @@ def _ensure_visibility_table():
 
 
 @transactional
-def set_post_visibility(post_id: int,
+def set_post_visibility(post_id: int, user_id: int,
                         visible_to: list[int] | None = None,
                         invisible_to: list[int] | None = None) -> dict:
     """
     设置帖子的"谁可以看"（白名单）和"谁不可以看"（黑名单）。
+    仅内容创作者和管理员可操作。
     - visible_to: 仅这些用户可以看到（白名单）
     - invisible_to: 这些用户不能看到（黑名单，优先级最高）
     """
+    from social.models import check_permission
+    if not check_permission(user_id, "set_post_visibility"):
+        return {"status": "forbidden", "message": "仅内容创作者和管理员可设置内容可见范围"}
     import json
     _ensure_visibility_table()
     conn = get_conn()
@@ -953,6 +965,341 @@ def get_not_interested_posts(user_id: int, limit: int = 20, offset: int = 0) -> 
         ORDER BY pr.created_at DESC
         LIMIT ? OFFSET ?
     """, (user_id, limit, offset)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 内容审核（管理员）
+# ---------------------------------------------------------------------------
+
+_moderation_tables_created = False
+
+
+def _ensure_moderation_tables():
+    global _moderation_tables_created
+    conn = get_conn()
+
+    # 先建 reports 表（不含 post_id，后续迁移补上）
+    conn.execute("""CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reporter_id INTEGER NOT NULL,
+            reason TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            admin_id INTEGER,
+            resolution TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
+        )""")
+
+    # 迁移：为旧 reports 表补上缺失的列
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(reports)").fetchall()]
+    _expected_report_cols = {
+        "post_id": "INTEGER",
+        "reason": "TEXT DEFAULT ''",
+        "status": "TEXT DEFAULT 'pending'",
+        "admin_id": "INTEGER",
+        "resolution": "TEXT DEFAULT ''",
+        "resolved_at": "TEXT",
+    }
+    for col_name, col_def in _expected_report_cols.items():
+        if col_name not in cols:
+            try:
+                conn.execute(f"ALTER TABLE reports ADD COLUMN {col_name} {col_def}")
+            except sqlite3.OperationalError:
+                pass
+
+    # 标志位已设置则不再建其他表（避免 executescript 在事务内提交）
+    if _moderation_tables_created:
+        return
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS moderation_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            target_id INTEGER,
+            action TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )""")
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS bans (
+            user_id INTEGER NOT NULL PRIMARY KEY,
+            admin_id INTEGER NOT NULL,
+            reason TEXT DEFAULT '',
+            expire_at TEXT,
+            created_at TEXT NOT NULL
+        )""")
+
+    _moderation_tables_created = True
+
+
+@transactional
+def report_content(reporter_id: int, post_id: int, reason: str = "") -> dict:
+    """
+    举报内容（所有用户均可）。
+    一条帖子可以被多次举报，但同一用户对同一帖子不能重复举报。
+    """
+    _ensure_moderation_tables()
+    conn = get_conn()
+    now = _now()
+
+    post = conn.execute("SELECT id, author_id FROM posts WHERE id = ?", (post_id,)).fetchone()
+    if not post:
+        raise ValueError("帖子不存在")
+
+    existing = conn.execute(
+        "SELECT id FROM reports WHERE reporter_id = ? AND post_id = ? AND status = 'pending'",
+        (reporter_id, post_id)
+    ).fetchone()
+    if existing:
+        return {"status": "already_reported", "message": "你已举报过该内容"}
+
+    cursor = conn.execute(
+        "INSERT INTO reports (reporter_id, post_id, reason, status, created_at) "
+        "VALUES (?, ?, ?, 'pending', ?)",
+        (reporter_id, post_id, reason.strip(), now)
+    )
+
+    # 通知管理员
+    admin_ids = conn.execute(
+        "SELECT id FROM users WHERE role = 'admin'"
+    ).fetchall()
+    for a in admin_ids:
+        _create_notification(conn, a["id"], "admin.report",
+                             from_user_id=reporter_id, post_id=post_id, created_at=now)
+
+    return {"status": "reported", "report_id": cursor.lastrowid}
+
+
+def get_reports(admin_id: int,
+                status: str | None = None,
+                limit: int = 40,
+                offset: int = 0) -> list[dict]:
+    """
+    获取举报列表（仅管理员）。
+    status: 'pending' | 'resolved' | 'ignored'，None 表示全部。
+    """
+    from social.models import check_permission
+    if not check_permission(admin_id, "moderate_content"):
+        raise ValueError("仅管理员可查看举报列表")
+
+    _ensure_moderation_tables()
+    conn = get_conn()
+
+    conditions = ["1=1"]
+    params: list = []
+
+    if status:
+        conditions.append("r.status = ?")
+        params.append(status)
+
+    where = " AND ".join(conditions)
+
+    rows = conn.execute(f"""
+        SELECT r.id, r.reporter_id, r.post_id, r.reason, r.status,
+               r.admin_id, r.resolution, r.created_at, r.resolved_at,
+               ru.username AS reporter_username, ru.display_name AS reporter_display,
+               p.content AS post_content, p.author_id AS post_author_id,
+               pu.username AS post_author_username, pu.display_name AS post_author_display,
+               au.username AS admin_username
+        FROM reports r
+        JOIN users ru ON ru.id = r.reporter_id
+        LEFT JOIN posts p ON p.id = r.post_id
+        LEFT JOIN users pu ON pu.id = p.author_id
+        LEFT JOIN users au ON au.id = r.admin_id
+        WHERE {where}
+        ORDER BY CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END, r.created_at DESC
+        LIMIT ? OFFSET ?
+    """, params + [limit, offset]).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+@transactional
+def review_report(report_id: int, admin_id: int,
+                  action: str,  # 'resolve' | 'ignore' | 'delete_post' | 'ban_user'
+                  note: str = "") -> dict:
+    """
+    审核举报（仅管理员）。
+    action:
+      - resolve:  标记为已处理，不做惩罚
+      - ignore:   忽略举报
+      - delete_post: 删除被举报帖子
+      - ban_user: 封禁被举报帖子的作者
+    """
+    from social.models import check_permission
+    if not check_permission(admin_id, "moderate_content"):
+        return {"status": "forbidden", "message": "仅管理员可审核举报"}
+
+    _ensure_moderation_tables()
+    conn = get_conn()
+    now = _now()
+
+    report = conn.execute(
+        "SELECT * FROM reports WHERE id = ?", (report_id,)
+    ).fetchone()
+    if not report:
+        raise ValueError("举报不存在")
+    report = dict(report)
+
+    if report["status"] != "pending":
+        return {"status": "already_reviewed", "message": "该举报已被处理"}
+
+    # 更新举报状态
+    conn.execute(
+        "UPDATE reports SET status = ?, admin_id = ?, resolution = ?, resolved_at = ? WHERE id = ?",
+        (action, admin_id, note, now, report_id)
+    )
+
+    # 记录审核日志
+    conn.execute(
+        "INSERT INTO moderation_logs (admin_id, target_id, action, detail, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (admin_id, report.get("post_id"), action, note, now)
+    )
+
+    # 执行具体动作
+    if action == "delete_post" and report.get("post_id"):
+        conn.execute("DELETE FROM posts WHERE id = ?", (report["post_id"],))
+        conn.execute("INSERT INTO posts_fts(posts_fts, rowid, content, spoiler_text) VALUES ('delete', ?, '', '')",
+                     (report["post_id"],))
+
+    if action == "ban_user" and report.get("post_id"):
+        post = conn.execute(
+            "SELECT author_id FROM posts WHERE id = ?", (report["post_id"],)
+        ).fetchone()
+        if post:
+            _apply_ban(conn, post["author_id"], admin_id,
+                       f"内容违规举报 #{report_id}", None, now)
+
+    return {"status": "reviewed", "action": action}
+
+
+@transactional
+def ban_user(admin_id: int, target_id: int,
+             reason: str = "", expire_at: str | None = None) -> dict:
+    """
+    封禁用户（仅管理员）。
+    封禁后用户无法登录、发帖、关注、发私信。
+    """
+    from social.models import check_permission
+    if not check_permission(admin_id, "moderate_content"):
+        return {"status": "forbidden", "message": "仅管理员可封禁用户"}
+
+    _ensure_moderation_tables()
+    conn = get_conn()
+    now = _now()
+
+    if admin_id == target_id:
+        raise ValueError("不能封禁自己")
+
+    target = conn.execute("SELECT id FROM users WHERE id = ?", (target_id,)).fetchone()
+    if not target:
+        raise ValueError("目标用户不存在")
+
+    _apply_ban(conn, target_id, admin_id, reason, expire_at, now)
+
+    conn.execute(
+        "INSERT INTO moderation_logs (admin_id, target_id, action, detail, created_at) "
+        "VALUES (?, ?, 'ban_user', ?, ?)",
+        (admin_id, target_id, reason, now)
+    )
+
+    return {"status": "banned"}
+
+
+def _apply_ban(conn, target_id: int, admin_id: int,
+               reason: str, expire_at: str | None, now: str):
+    """内部：执行封禁。设置 limited=1，插入 bans 表。"""
+    conn.execute(
+        "INSERT OR REPLACE INTO bans (user_id, admin_id, reason, expire_at, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (target_id, admin_id, reason, expire_at, now)
+    )
+    conn.execute("UPDATE users SET limited = 1 WHERE id = ?", (target_id,))
+
+
+@transactional
+def unban_user(admin_id: int, target_id: int) -> dict:
+    """
+    解封用户（仅管理员）。
+    """
+    from social.models import check_permission
+    if not check_permission(admin_id, "moderate_content"):
+        return {"status": "forbidden", "message": "仅管理员可解封用户"}
+
+    _ensure_moderation_tables()
+    conn = get_conn()
+    now = _now()
+
+    deleted = conn.execute(
+        "DELETE FROM bans WHERE user_id = ?", (target_id,)
+    ).rowcount
+    conn.execute("UPDATE users SET limited = 0 WHERE id = ?", (target_id,))
+    conn.execute(
+        "INSERT INTO moderation_logs (admin_id, target_id, action, detail, created_at) "
+        "VALUES (?, ?, 'unban_user', '', ?)",
+        (admin_id, target_id, now)
+    )
+    return {"status": "unbanned" if deleted else "not_banned"}
+
+
+def is_banned(user_id: int) -> bool:
+    """检查用户是否被封禁（含过期检查）"""
+    _ensure_moderation_tables()
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT expire_at FROM bans WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if not row:
+        return False
+    if row["expire_at"] and row["expire_at"] < _now():
+        # 过期自动解封
+        conn.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE users SET limited = 0 WHERE id = ?", (user_id,))
+        conn.commit()
+        return False
+    return True
+
+
+def get_banned_users(admin_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
+    """获取封禁用户列表（仅管理员）"""
+    from social.models import check_permission
+    if not check_permission(admin_id, "moderate_content"):
+        raise ValueError("仅管理员可查看封禁列表")
+
+    _ensure_moderation_tables()
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT b.user_id, b.reason, b.expire_at, b.created_at AS banned_at,
+               u.username, u.display_name, u.acct, u.avatar,
+               au.username AS admin_username
+        FROM bans b
+        JOIN users u ON u.id = b.user_id
+        JOIN users au ON au.id = b.admin_id
+        ORDER BY b.created_at DESC
+        LIMIT ? OFFSET ?
+    """, (limit, offset)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_moderation_log(admin_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
+    """获取审核日志（仅管理员）"""
+    from social.models import check_permission
+    if not check_permission(admin_id, "moderate_content"):
+        raise ValueError("仅管理员可查看审核日志")
+
+    _ensure_moderation_tables()
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT ml.id, ml.admin_id, ml.target_id, ml.action, ml.detail, ml.created_at,
+               au.username AS admin_username, au.display_name AS admin_display,
+               tu.username AS target_username
+        FROM moderation_logs ml
+        JOIN users au ON au.id = ml.admin_id
+        LEFT JOIN users tu ON tu.id = ml.target_id
+        ORDER BY ml.created_at DESC
+        LIMIT ? OFFSET ?
+    """, (limit, offset)).fetchall()
     return [dict(r) for r in rows]
 
 

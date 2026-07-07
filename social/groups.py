@@ -106,8 +106,16 @@ def dissolve_group(group_id: int, owner_id: int) -> dict:
     ).fetchone()
     if not grp:
         raise ValueError("群聊不存在")
-    if grp["owner_id"] != owner_id:
+
+    # 管理员可以解散任意群聊
+    from social.models import check_permission
+    is_admin = check_permission(owner_id, "moderate_content")
+    if grp["owner_id"] != owner_id and not is_admin:
         raise ValueError("仅群主可以解散群聊")
+
+    # 记录管理员解散
+    if is_admin and grp["owner_id"] != owner_id:
+        note = f"管理员 {owner_id} 解散了群主 {grp['owner_id']} 的群聊"
 
     conn.execute("DELETE FROM chat_messages WHERE group_id = ?", (group_id,))
     conn.execute("DELETE FROM chat_group_members WHERE group_id = ?", (group_id,))

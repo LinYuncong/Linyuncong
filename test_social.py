@@ -535,10 +535,23 @@ if user_a_id and user_b_id and user_c_id:
     except Exception as e:
         log_error("social", "private可见性", e)
 
-    # --- 谁可以看 / 谁不可以看 ---
+    # --- 角色提升为创作者（set_post_visibility 需要 creator+）
+    from social.models import set_user_role
+    from social.social import set_post_visibility as _set_pv
+
+    # 将 Alice 提升为 creator，以便测试可见性设置
+    try:
+        set_user_role(user_a_id, "creator", user_a_id)
+        # Alice 需要先成为 admin 才能设置自己的角色，这里直接用 SQL 绕过
+        conn = get_conn()
+        conn.execute("UPDATE users SET role = 'creator' WHERE id = ?", (user_a_id,))
+        conn.commit()
+    except Exception:
+        pass
+
     # 测试 visible_to（白名单）
     try:
-        set_post_visibility(private_post_id, visible_to=[user_c_id])
+        _set_pv(private_post_id, user_a_id, visible_to=[user_c_id])
         p = get_post(private_post_id, viewer_id=user_c_id)
         log_result("social", "visible_to白名单中的人可看private帖", "通过" if p else "失败")
     except Exception as e:
@@ -546,7 +559,7 @@ if user_a_id and user_b_id and user_c_id:
 
     # 测试 invisible_to（黑名单）
     try:
-        set_post_visibility(public_post_id, invisible_to=[user_b_id])
+        _set_pv(public_post_id, user_a_id, invisible_to=[user_b_id])
         p = get_post(public_post_id, viewer_id=user_b_id)
         log_result("social", "invisible_to黑名单中的人不可看公开帖", "通过" if p is None else "失败")
         p = get_post(public_post_id, viewer_id=user_c_id)
@@ -574,7 +587,7 @@ if user_a_id and user_b_id and user_c_id:
 
     # visible_to + friends_only: 白名单中的人即使不是好友也能看
     try:
-        set_post_visibility(friends_post_id, visible_to=[user_c_id])
+        _set_pv(friends_post_id, user_a_id, visible_to=[user_c_id])
         p = get_post(friends_post_id, viewer_id=user_c_id)
         log_result("social", "friends_only+visible_to使非好友可见", "通过" if p else "失败")
     except Exception as e:
@@ -890,6 +903,318 @@ if user_a_id and user_b_id:
             unblock(user_b_id, user_a_id)
         except Exception as e:
             log_error("social", "屏蔽后关注检测", e)
+
+# ================================================================
+# 5.9 角色系统与权限检查
+# ================================================================
+section("5.9 角色系统与权限检查")
+
+try:
+    from social.models import (
+        get_user_role, set_user_role, check_permission,
+        ROLE_HIERARCHY, VALID_ROLES
+    )
+except Exception as e:
+    log_error("models", "导入角色系统模块", e)
+
+if user_a_id and user_b_id and user_c_id:
+    # 重置所有角色为 normal（防止之前测试的残留影响）
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE users SET role = 'normal' WHERE id IN (?, ?, ?)",
+                     (user_a_id, user_b_id, user_c_id))
+        conn.commit()
+    except Exception:
+        pass
+
+    # 默认角色应为 normal
+    try:
+        role = get_user_role(user_a_id)
+        log_result("models", "Alice 默认角色", "通过" if role == "normal" else "失败", f"角色={role}")
+    except Exception as e:
+        log_error("models", "Alice 默认角色", e)
+
+    # 提升 Alice 为 admin（直接用 SQL 绕过权限检查）
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (user_a_id,))
+        conn.commit()
+        role = get_user_role(user_a_id)
+        log_result("models", "Alice 提升为 admin", "通过" if role == "admin" else "失败", f"角色={role}")
+    except Exception as e:
+        log_error("models", "提升为 admin", e)
+
+    # Alice(admin) 将 Bob 设置为 creator
+    try:
+        r = set_user_role(user_b_id, "creator", user_a_id)
+        log_result("models", "admin 设置 Bob 为 creator", "通过" if r["status"] == "updated" else "失败", f"结果={r['status']}")
+        role_b = get_user_role(user_b_id)
+        log_result("models", "Bob 角色验证", "通过" if role_b == "creator" else "失败", f"角色={role_b}")
+    except Exception as e:
+        log_error("models", "设置 creator", e)
+
+    # 非法角色
+    try:
+        set_user_role(user_b_id, "superadmin", user_a_id)
+        log_result("models", "设置非法角色（应失败）", "失败", "未抛出异常")
+    except ValueError:
+        log_result("models", "设置非法角色（应失败）", "通过")
+    except Exception as e:
+        log_error("models", "非法角色", e)
+
+    # Bob(creator) 尝试设置 Charlie 角色（应被拒绝）
+    try:
+        r = set_user_role(user_c_id, "creator", user_b_id)
+        log_result("models", "creator 设置他人角色（应被拒）", "通过" if r["status"] == "forbidden" else "失败")
+    except Exception as e:
+        log_error("models", "creator 设角色", e)
+
+    # check_permission 测试
+    try:
+        ok = check_permission(user_a_id, "moderate_content")
+        log_result("models", "admin 有审核权限", "通过" if ok else "失败")
+    except Exception as e:
+        log_error("models", "admin 审核权限", e)
+
+    try:
+        ok = check_permission(user_b_id, "set_post_visibility")
+        log_result("models", "creator 有设置可见性权限", "通过" if ok else "失败")
+    except Exception as e:
+        log_error("models", "creator 可见性权限", e)
+
+    try:
+        ok = check_permission(user_c_id, "set_post_visibility")
+        log_result("models", "normal 无设置可见性权限", "通过" if not ok else "失败")
+    except Exception as e:
+        log_error("models", "normal 可见性权限", e)
+
+    try:
+        ok = check_permission(None, "set_post_visibility")
+        log_result("models", "未登录无权限", "通过" if not ok else "失败")
+    except Exception as e:
+        log_error("models", "未登录权限", e)
+
+    # normal 用户尝试 set_post_visibility
+    try:
+        from social.social import set_post_visibility as _spv
+        tp = _create_test_post(user_c_id, "Charlie公开贴", "public")
+        r = _spv(tp, user_c_id, visible_to=[user_b_id])
+        log_result("social", "normal 设置可见性（应被拒）", "通过" if r["status"] == "forbidden" else "失败", f"结果={r['status']}")
+    except Exception as e:
+        log_error("social", "normal 设置可见性", e)
+
+# ================================================================
+# 5.10 封禁与审核
+# ================================================================
+section("5.10 封禁与审核")
+
+try:
+    from social.social import (
+        report_content, get_reports, review_report,
+        ban_user, unban_user, is_banned, get_banned_users, get_moderation_log
+    )
+except Exception as e:
+    log_error("social", "导入审核模块", e)
+
+_report_post_id = None
+if user_a_id and user_b_id:
+    _report_post_id = _create_test_post(user_b_id, "违规内容测试帖", "public")
+
+if user_a_id and user_c_id and _report_post_id:
+    # 举报内容
+    try:
+        r = report_content(user_c_id, _report_post_id, "含有违规信息")
+        log_result("social", "Charlie 举报帖子", "通过" if r["status"] == "reported" else "失败", f"结果={r['status']}")
+        report_id = r.get("report_id")
+    except Exception as e:
+        log_error("social", "举报帖子", e)
+        report_id = None
+
+    # 重复举报
+    try:
+        r = report_content(user_c_id, _report_post_id, "再次举报")
+        log_result("social", "重复举报（应被拒）", "通过" if r["status"] == "already_reported" else "失败")
+    except Exception as e:
+        log_error("social", "重复举报", e)
+
+    # admin 查看举报列表
+    try:
+        reports = get_reports(user_a_id)
+        log_result("social", "admin 查看举报列表", "通过", f"共{len(reports)}条")
+    except Exception as e:
+        log_error("social", "查看举报列表", e)
+
+    # 非 admin 查看举报列表（应被拒）
+    try:
+        get_reports(user_c_id)
+        log_result("social", "normal 查看举报列表（应失败）", "失败", "未抛出异常")
+    except (ValueError, Exception):
+        log_result("social", "normal 查看举报列表（应失败）", "通过")
+
+    # admin 审核举报
+    if report_id:
+        try:
+            r = review_report(report_id, user_a_id, "resolve", "已警告用户")
+            log_result("social", "admin 审核举报", "通过" if r["status"] == "reviewed" else "失败", f"动作={r.get('action')}")
+        except Exception as e:
+            log_error("social", "审核举报", e)
+
+    # 封禁用户
+    try:
+        r = ban_user(user_a_id, user_b_id, "违规行为")
+        log_result("social", "admin 封禁 Bob", "通过" if r["status"] == "banned" else "失败")
+    except Exception as e:
+        log_error("social", "封禁用户", e)
+
+    # 被封禁检查
+    try:
+        banned = is_banned(user_b_id)
+        log_result("social", "Bob 被封禁状态", "通过" if banned else "失败")
+    except Exception as e:
+        log_error("social", "检查封禁", e)
+
+    # 封禁后无法关注
+    try:
+        r = follow(user_b_id, user_c_id)
+        log_result("social", "封禁后无法关注", "通过" if r["status"] == "banned" else "失败", f"结果={r['status']}")
+    except Exception as e:
+        log_error("social", "封禁后关注", e)
+
+    # 查看封禁列表
+    try:
+        banned_list = get_banned_users(user_a_id)
+        log_result("social", "admin 查看封禁列表", "通过", f"共{len(banned_list)}条")
+    except Exception as e:
+        log_error("social", "查看封禁列表", e)
+
+    # 查看审核日志
+    try:
+        logs = get_moderation_log(user_a_id)
+        log_result("social", "admin 查看审核日志", "通过", f"共{len(logs)}条")
+    except Exception as e:
+        log_error("social", "审核日志", e)
+
+    # 解封用户
+    try:
+        r = unban_user(user_a_id, user_b_id)
+        log_result("social", "admin 解封 Bob", "通过" if r["status"] == "unbanned" else "失败")
+        banned = is_banned(user_b_id)
+        log_result("social", "Bob 已解封", "通过" if not banned else "失败")
+    except Exception as e:
+        log_error("social", "解封用户", e)
+
+    # 解封后恢复关注
+    try:
+        r = follow(user_b_id, user_c_id)
+        log_result("social", "解封后恢复关注", "通过" if r["status"] in ("followed", "requested", "already_following") else "失败")
+        unfollow(user_b_id, user_c_id)
+    except Exception as e:
+        log_error("social", "解封后关注", e)
+
+    # 不能封禁自己
+    try:
+        ban_user(user_a_id, user_a_id, "测试")
+        log_result("social", "admin 封禁自己（应失败）", "失败", "未抛出异常")
+    except ValueError:
+        log_result("social", "admin 封禁自己（应失败）", "通过")
+    except Exception as e:
+        log_error("social", "封禁自己", e)
+
+    # 恢复角色
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE users SET role = 'normal' WHERE id = ?", (user_a_id,))
+        conn.execute("UPDATE users SET role = 'normal' WHERE id = ?", (user_b_id,))
+        conn.commit()
+    except Exception:
+        pass
+
+# ================================================================
+# 5.11 管理员审核搜索
+# ================================================================
+section("5.11 管理员审核搜索")
+
+try:
+    from social.search import moderation_search
+except Exception as e:
+    log_error("search", "导入审核搜索", e)
+
+if user_a_id and search_post_id:
+    # 提升 Alice 为 admin 临时测试
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (user_a_id,))
+        conn.commit()
+        mod_results = moderation_search(keyword="公开", admin_id=user_a_id, limit=10)
+        log_result("search", "admin 审核搜索", "通过", f"找到{len(mod_results)}条")
+    except Exception as e:
+        log_error("search", "审核搜索", e)
+
+    # 非 admin 不能使用审核搜索
+    try:
+        moderation_search(keyword="测试", admin_id=user_c_id)
+        log_result("search", "normal 审核搜索（应失败）", "失败", "未抛出异常")
+    except (ValueError, Exception):
+        log_result("search", "normal 审核搜索（应失败）", "通过")
+
+    # 恢复
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE users SET role = 'normal' WHERE id = ?", (user_a_id,))
+        conn.commit()
+    except Exception:
+        pass
+
+# ================================================================
+# 5.12 管理员解散群聊
+# ================================================================
+section("5.12 管理员解散群聊")
+
+try:
+    from social.groups import create_group as _cg, dissolve_group as _dg, add_member as _am
+except Exception as e:
+    log_error("groups", "导入群聊测试", e)
+
+if user_a_id and user_b_id and user_c_id:
+    # Bob 创建群聊
+    try:
+        r = _cg(user_b_id, "管理员测试群")
+        admin_test_group = r["group_id"]
+        _am(admin_test_group, user_b_id, user_c_id)
+        log_result("groups", "Bob 创建群聊供测试", "通过", f"group_id={admin_test_group}")
+    except Exception as e:
+        log_error("groups", "创建测试群", e)
+        admin_test_group = None
+
+    # 提升 Alice 为 admin 解散 Bob 的群
+    if admin_test_group:
+        try:
+            conn = get_conn()
+            conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (user_a_id,))
+            conn.commit()
+            r = _dg(admin_test_group, user_a_id)
+            log_result("groups", "admin 解散他人群聊", "通过" if r["status"] == "dissolved" else "失败")
+        except Exception as e:
+            log_error("groups", "admin 解散群聊", e)
+
+    # 恢复
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE users SET role = 'normal' WHERE id = ?", (user_a_id,))
+        conn.commit()
+    except Exception:
+        pass
+
+    # normal 用户不能解散他人群聊
+    try:
+        r2 = _cg(user_b_id, "另一个群")
+        g2_id = r2["group_id"]
+        _dg(g2_id, user_c_id)
+        log_result("groups", "normal 解散他人群聊（应失败）", "失败", "未抛出异常")
+    except ValueError:
+        log_result("groups", "normal 解散他人群聊（应失败）", "通过")
+    except Exception as e:
+        log_error("groups", "normal 解散群聊", e)
 
 # ================================================================
 # 6. 私信发送和接收

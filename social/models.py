@@ -1,12 +1,109 @@
 """
-用户 & 帖子 CRUD 辅助函数
+用户 & 帖子 CRUD 辅助函数 + 角色权限系统
 
 为其他模块提供基础的数据读写能力。
+
+角色体系（三档）：
+  normal   普通用户：发送私信、加好友、浏览动态
+  creator  内容创作者：设置内容可见范围、发布动态
+  admin    管理员：系统设置、审核违规内容
 """
 
 import sqlite3
 from datetime import datetime, timezone
 from social.db import get_conn, transactional
+
+
+# ---------------------------------------------------------------------------
+# 角色管理
+# ---------------------------------------------------------------------------
+
+# 角色层级映射（数字越大权限越高）
+ROLE_HIERARCHY = {"normal": 0, "creator": 1, "admin": 2}
+
+VALID_ROLES = {"normal", "creator", "admin"}
+
+# 各操作所需的最低角色
+PERMISSION_ROLE = {
+    "set_post_visibility": "creator",
+    "moderate_content": "admin",
+    "set_user_role": "admin",
+    "view_all_content": "admin",
+    "system_settings": "admin",
+}
+
+
+def _get_user_role(user_id: int) -> str:
+    """获取用户角色（仅供内部调用，不检查用户是否存在）"""
+    conn = get_conn()
+    row = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not row:
+        raise ValueError("用户不存在")
+    role = (row["role"] or "").strip().lower()
+    return role if role in VALID_ROLES else "normal"
+
+
+def get_user_role(user_id: int) -> str:
+    """获取用户角色"""
+    return _get_user_role(user_id)
+
+
+def _migrate_role_column():
+    """
+    迁移：确保 users 表的 role 列默认为 'normal'。
+    兼容旧数据（'user' → 'normal', 'moderator' → 'admin'）。
+    """
+    conn = get_conn()
+    # 将旧的 'user' 角色统一为 'normal'
+    conn.execute("UPDATE users SET role = 'normal' WHERE role = 'user' OR role = '' OR role IS NULL")
+    # 将旧的 'moderator' 角色统一为 'admin'
+    conn.execute("UPDATE users SET role = 'admin' WHERE role = 'moderator'")
+    conn.commit()
+
+
+@transactional
+def set_user_role(target_id: int, role: str, admin_id: int) -> dict:
+    """
+    设置用户角色（仅管理员可操作）。
+    role: 'normal' | 'creator' | 'admin'
+    """
+    if role not in VALID_ROLES:
+        raise ValueError(f"无效角色: {role}，可选: {', '.join(VALID_ROLES)}")
+
+    admin_role = _get_user_role(admin_id)
+    if admin_role != "admin":
+        return {"status": "forbidden", "message": "仅管理员可设置用户角色"}
+
+    target = get_user(target_id)
+    if not target:
+        raise ValueError("目标用户不存在")
+
+    old_role = (target["role"] or "normal").strip().lower()
+    update_user(target_id, role=role)
+    return {"status": "updated", "old_role": old_role, "new_role": role}
+
+
+def check_permission(user_id: int | None, action: str) -> bool:
+    """
+    检查用户是否有权限执行某操作。
+    未登录用户对于需要角色的操作一律返回 False。
+    """
+    if user_id is None:
+        return False
+
+    required = PERMISSION_ROLE.get(action)
+    if required is None:
+        return True  # 未注册的操作默认允许
+
+    user_role = _get_user_role(user_id)
+    return ROLE_HIERARCHY.get(user_role, 0) >= ROLE_HIERARCHY.get(required, 0)
+
+
+# 首次导入时执行角色迁移
+try:
+    _migrate_role_column()
+except Exception:
+    pass
 
 
 # ---------------------------------------------------------------------------

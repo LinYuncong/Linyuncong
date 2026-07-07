@@ -98,6 +98,11 @@ def send_direct_message(sender_id: int,
     if not member:
         raise ValueError("你不在此会话中")
 
+    # 检查是否被封禁
+    from social.social import is_banned
+    if is_banned(sender_id):
+        return {"status": "banned", "message": "你已被封禁，无法发送私信"}
+
     # 找到会话中的其他参与者（接收者）
     recipients = conn.execute(
         "SELECT user_id FROM conversation_accounts "

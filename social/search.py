@@ -441,6 +441,52 @@ def search_suggest(query: str,
 
 
 # ---------------------------------------------------------------------------
+# 管理员全量搜索（不受可见性限制，用于审核）
+# ---------------------------------------------------------------------------
+
+def moderation_search(keyword: str | None = None,
+                     admin_id: int | None = None,
+                     include_direct: bool = True,
+                     include_deleted_author: bool = True,
+                     limit: int = 50,
+                     offset: int = 0) -> list[dict]:
+    """
+    管理员审核搜索。
+    可查看所有可见性的帖子（含 direct），用于审核违规内容。
+    """
+    from social.models import check_permission
+    if admin_id is None or not check_permission(admin_id, "view_all_content"):
+        raise ValueError("仅管理员可使用审核搜索")
+
+    conn = get_conn()
+
+    conditions = ["1=1"]
+    params: list = []
+
+    visibilities = ["'public'", "'unlisted'", "'friends_only'", "'private'"]
+    if include_direct:
+        visibilities.append("'direct'")
+    conditions.append(f"p.visibility IN ({','.join(visibilities)})")
+
+    if keyword:
+        conditions.append("p.id IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)")
+        params.append(_sanitize_query(keyword))
+
+    where = " AND ".join(conditions)
+
+    rows = conn.execute(f"""
+        SELECT p.*, u.username, u.display_name, u.acct, u.avatar, u.limited
+        FROM posts p
+        JOIN users u ON u.id = p.author_id
+        WHERE {where}
+        ORDER BY p.created_at DESC
+        LIMIT ? OFFSET ?
+    """, params + [limit, offset]).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
 

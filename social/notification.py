@@ -392,6 +392,20 @@ def push_notification(user_id: int, title: str, body: str,
     return results
 
 
+def notify_admin(reporter_id: int, post_id: int, reason: str = ""):
+    """通知所有管理员（举报）"""
+    conn = get_conn()
+    admin_ids = conn.execute(
+        "SELECT id FROM users WHERE role = 'admin'"
+    ).fetchall()
+    results = []
+    for a in admin_ids:
+        r = create_notification(a["id"], "admin.report",
+                                from_user_id=reporter_id, post_id=post_id)
+        results.append(r)
+    return results
+
+
 # ---------------------------------------------------------------------------
 # 辅助
 # ---------------------------------------------------------------------------
