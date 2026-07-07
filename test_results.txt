@@ -1,0 +1,183 @@
+
+============================================================
+1. 数据库连接测试
+============================================================
+[db] 获取数据库连接: 通过 - 连接成功, journal_mode=wal
+[db] 读取表列表: 通过 - 共 60 个表: announcement_reactions, announcement_reads, announcements, blocks, bookmarks, chat_group_members, chat_groups, chat_messages, conversation_accounts, conversations...
+[db] 事务装饰器: 通过
+
+============================================================
+2. 用户创建和查询
+============================================================
+[models] 创建用户Alice: 通过 - id=134
+[models] 创建用户Bob: 通过 - id=135
+[models] 创建用户Charlie（锁定）: 通过 - id=136
+[models] get_user查询: 通过 - username=alice_101237
+[models] get_user_by_username: 通过
+[models] get_user_by_email: 通过
+[models] update_user更新: 通过
+[models] 重复用户名创建（应失败）: 通过 - 正确抛出ValueError
+
+============================================================
+3. 关注/取关/屏蔽/静音
+============================================================
+[social] Alice关注Bob: 通过 - 结果=followed
+[social] is_following检查: 通过
+[social] 重复关注（应返回already_following）: 通过 - 结果=already_following
+[social] 自己关注自己（应失败）: 通过 - 正确抛出ValueError
+[social] Alice关注Charlie（锁定用户）: 通过 - 结果=requested - 应为requested
+[social] 获取Charlie的关注请求: 通过 - 共1条
+[social] Charlie拒绝Bob的关注请求: 通过
+[social] 获取Bob的粉丝列表: 通过 - 共1条
+[social] 获取Alice的关注列表: 通过 - 共1条
+[social] Alice取关Bob: 通过 - 结果=unfollowed
+[social] is_following检查（取关后）: 通过
+[social] Alice屏蔽Bob: 通过 - 结果=blocked
+[social] is_blocked检查: 通过
+[social] 重复屏蔽（应返回already_blocked）: 通过 - 结果=already_blocked
+[social] 自己屏蔽自己（应失败）: 通过 - 正确抛出ValueError
+[social] Bob关注Alice（被屏蔽）: 通过 - 结果=blocked - 应为blocked
+[social] 获取Alice的屏蔽列表: 通过 - 共1条
+[social] Alice取消屏蔽Bob: 通过 - 结果=unblocked
+[social] is_blocked检查（取消屏蔽后）: 通过
+[social] Alice静音Bob: 通过 - 结果=muted
+[social] is_muted检查: 通过
+[social] 重复静音（应返回already_muted）: 通过 - 结果=already_muted
+[social] 自己静音自己（应失败）: 通过 - 正确抛出ValueError
+[social] 获取Alice的静音列表: 通过 - 共1条
+[social] Alice取消静音Bob: 通过 - 结果=unmuted
+[social] is_muted检查（取消静音后）: 通过
+[social] Alice屏蔽域名: 通过 - 结果=domain_blocked
+[social] 获取域名屏蔽列表: 通过 - 共1条
+[social] Alice取消域名屏蔽: 通过
+
+============================================================
+4. 通知创建和查询
+============================================================
+[notification] 创建关注通知: 通过 - 结果=created, id=321
+[notification] 创建提及通知: 通过 - 结果=created, id=322
+[notification] 自己给自己发通知（应跳过）: 通过 - 结果=skipped - 应为skipped
+[notification] 获取Alice的通知列表: 通过 - 共1条
+[notification] 获取Alice的未读通知数: 通过 - 未读数=1
+[notification] 标记全部已读: 通过 - 已标记1条
+[notification] 已读后未读数验证: 通过 - 未读数=0
+[notification] 获取聚合通知: 通过 - 共0组
+[notification] 屏蔽后通知被跳过: 通过 - 结果=skipped
+[notification] 注册WebPush订阅: 通过 - 结果=subscribed
+[notification] 获取推送订阅: 通过 - 共1条
+[notification] 推送通知: 通过 - 推送1个端点
+
+============================================================
+5. 好友判断 / 贴子可见性
+============================================================
+[social] 初始状态不是好友: 通过
+[social] 单向关注不是好友: 通过
+[social] 互相关注后是好友: 通过
+[social] 好友关系对称: 通过
+[social] 获取Alice好友列表: 通过 - 共1个好友
+[social] Bob在Alice好友列表中: 通过
+[social] 自己和自己互为好友: 通过
+[social] 创建测试帖子: 通过 - public=862, friends_only=863, private=864
+[social] 作者查看公开帖: 通过
+[social] 作者查看好友可见帖: 通过
+[social] 作者查看私密帖: 通过
+[social] 好友查看公开帖: 通过
+[social] 陌生人查看公开帖: 通过
+[social] 好友查看friends_only帖: 通过 - Bob是Alice好友
+[social] 陌生人查看friends_only帖: 通过 - Charlie不是好友，应不可见
+[social] 非作者查看private帖: 通过 - 应不可见
+[social] visible_to白名单中的人可看private帖: 通过
+[social] invisible_to黑名单中的人不可看公开帖: 通过
+[social] 不在黑名单中的人仍可看公开帖: 通过
+[social] 黑名单不影响作者本人: 通过
+[social] 未登录查看公开帖: 通过
+[social] 未登录查看friends_only帖: 通过
+[social] 未登录查看private帖: 通过
+[social] friends_only+visible_to使非好友可见: 通过
+
+============================================================
+5.5 好友分组
+============================================================
+[social] 创建好友分组: 通过 - 结果=created
+[social] 重复分组名（应返回duplicate）: 通过
+[social] 添加好友到分组: 通过 - 结果=added
+[social] 重复添加到分组: 通过
+[social] 获取分组列表: 通过 - 共1个分组
+[social] 分组成员数验证: 通过 - 成员数=1
+[social] 从分组移除好友: 通过
+[social] 删除好友分组: 通过
+[social] 非本人操作分组（应失败）: 通过 - 正确抛出ValueError
+
+============================================================
+5.6 推荐系统 + 不感兴趣
+============================================================
+[social] 推荐用户: 通过 - 推荐0个用户
+[social] 推荐动态: 通过 - 推荐0条
+[social] 标记不感兴趣: 通过 - 结果=marked
+[social] 重复标记不感兴趣: 通过
+[social] 获取不感兴趣列表: 通过 - 共1条
+
+============================================================
+5.7 群聊管理
+============================================================
+[groups] 创建群聊: 通过 - group_id=4
+[groups] 空名称创建群聊（应失败）: 通过
+[groups] 群主添加成员: 通过
+[groups] 非群主添加成员（应失败）: 通过
+[groups] 获取群成员列表: 通过 - 共2人
+[groups] 群主在成员列表中: 通过
+[groups] 设置成员文件修改权限: 通过
+[groups] 权限验证: 通过
+[groups] 保存聊天记录: 通过
+[groups] 成员发送消息: 通过
+[groups] 获取聊天记录: 通过 - 共2条
+[groups] 获取用户群列表: 通过 - 共1个群
+[groups] 非群主解散群聊（应失败）: 通过
+[groups] 群主移除成员: 通过
+[groups] 群主解散群聊: 通过
+
+============================================================
+5.8 拉黑增强
+============================================================
+[dm] 屏蔽后A无法向B发私信: 通过 - 结果=blocked
+[dm] 被屏蔽后A无法向B发私信: 通过 - 结果=blocked
+[social] 屏蔽后无法关注: 通过
+
+============================================================
+6. 私信发送和接收
+============================================================
+[direct_message] 创建Alice-Bob会话: 通过 - 结果=exists, conv_id=13
+[direct_message] 重复创建会话（应返回exists）: 通过 - 结果=exists
+[direct_message] Alice发送私信: 通过 - 结果=sent, post_id=866
+[direct_message] Bob回复私信: 通过 - 结果=sent, post_id=867
+[direct_message] 获取会话消息列表: 通过 - 共2条消息
+[direct_message] 消息内容验证: 通过
+[direct_message] 获取Alice的会话列表: 通过 - 共1条会话
+[direct_message] 标记会话已读: 通过 - 结果=read
+[direct_message] 获取未读会话数: 通过 - 未读数=0
+[direct_message] 非会话成员发送私信（应失败）: 通过
+[direct_message] 少于2人创建会话（应失败）: 通过
+
+============================================================
+7. 全文搜索
+============================================================
+[search] 初始化FTS5索引: 通过 - 结果=fts_initialized
+[search] 搜索帖子（关键词：公开）: 通过 - 找到6条
+[search] 按时间排序搜索帖子: 通过 - 找到0条
+[search] 按热度排序搜索帖子: 通过 - 找到0条
+[search] 搜索用户（关键词：alice）: 通过 - 找到12条
+[search] 搜索标签（关键词：测试）: 通过 - 找到1条
+[search] 按标签搜索帖子: 通过 - 找到7条
+[search] 混合搜索: 通过 - posts=6, users=12, tags=1
+[search] 高级搜索（关键词+可见性）: 通过 - 找到6条
+[search] 搜索建议（前缀：al）: 通过 - tags=1, users=8
+[search] 空查询搜索（应返回空列表）: 通过
+
+============================================================
+测试汇总
+============================================================
+总计: 130 项测试
+通过: 130
+失败: 0
+通过率: 100.0%
+测试时间: 2026-07-07 10:12:38

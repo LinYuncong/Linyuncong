@@ -1,0 +1,7 @@
+﻿__pycache__/
+*.pyc
+*.db
+dotnet_ver.txt
+install_result.txt
+result.txt
+code_to_txt.txt
