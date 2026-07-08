@@ -6,7 +6,6 @@
   - conversation 用于组织对话上下文
   - 一条私信只能 @ 一个用户
 """
-
 import sqlite3
 from datetime import datetime, timezone
 from social.db import get_conn, transactional

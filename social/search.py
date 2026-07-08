@@ -9,7 +9,6 @@
 
 FTS5 索引需在建表后通过 init_fts() 初始化。
 """
-
 import re
 import sqlite3
 from social.db import get_conn, transactional

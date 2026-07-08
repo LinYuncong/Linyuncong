@@ -5,7 +5,6 @@
           poll / status / update / admin.sign_up / admin.report /
           severed_relationships / moderation_warning / annual_report / quote
 """
-
 import sqlite3
 from datetime import datetime, timezone
 from social.db import get_conn, transactional

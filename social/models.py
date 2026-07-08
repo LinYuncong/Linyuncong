@@ -8,7 +8,6 @@
   creator  内容创作者：设置内容可见范围、发布动态
   admin    管理员：系统设置、审核违规内容
 """
-
 import sqlite3
 from datetime import datetime, timezone
 from social.db import get_conn, transactional

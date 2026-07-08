@@ -3,7 +3,6 @@
 
 所有接口使用 user_id 表示当前操作者身份。
 """
-
 import sqlite3
 from datetime import datetime, timezone
 from social.db import get_conn, transactional

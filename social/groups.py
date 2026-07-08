@@ -14,7 +14,6 @@
   chat_group_members  群成员及权限
   chat_messages       聊天记录
 """
-
 import sqlite3
 from datetime import datetime, timezone
 from social.db import get_conn, transactional

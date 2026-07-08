@@ -4,7 +4,6 @@
 """
 import sqlite3
 import threading
-
 DB_PATH = r"c:\Users\lyc\Desktop\work\social.db"#用r防止反斜杠转义出错
 
 _local = threading.local()#各线程不共享数据
