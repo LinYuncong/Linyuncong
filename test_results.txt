@@ -3,16 +3,16 @@
 1. 数据库连接测试
 ============================================================
 [db] 获取数据库连接: 通过 - 连接成功, journal_mode=wal
-[db] 读取表列表: 通过 - 共 61 个表: announcement_reactions, announcement_reads, announcements, bans, blocks, bookmarks, chat_group_members, chat_groups, chat_messages, conversation_accounts...
+[db] 读取表列表: 通过 - 共 0 个表: ...
 [db] 事务装饰器: 通过
 
 ============================================================
 2. 用户创建和查询
 ============================================================
-[models] 创建用户Alice: 通过 - id=152
-[models] 创建用户Bob: 通过 - id=153
-[models] 创建用户Charlie（锁定）: 通过 - id=154
-[models] get_user查询: 通过 - username=alice_232355
+[models] 创建用户Alice: 通过 - id=1
+[models] 创建用户Bob: 通过 - id=2
+[models] 创建用户Charlie（锁定）: 通过 - id=3
+[models] get_user查询: 通过 - username=alice_142524
 [models] get_user_by_username: 通过
 [models] get_user_by_email: 通过
 [models] update_user更新: 通过
@@ -54,8 +54,8 @@
 ============================================================
 4. 通知创建和查询
 ============================================================
-[notification] 创建关注通知: 通过 - 结果=created, id=380
-[notification] 创建提及通知: 通过 - 结果=created, id=381
+[notification] 创建关注通知: 通过 - 结果=created, id=4
+[notification] 创建提及通知: 通过 - 结果=created, id=5
 [notification] 自己给自己发通知（应跳过）: 通过 - 结果=skipped - 应为skipped
 [notification] 获取Alice的通知列表: 通过 - 共1条
 [notification] 获取Alice的未读通知数: 通过 - 未读数=1
@@ -77,7 +77,7 @@
 [social] 获取Alice好友列表: 通过 - 共1个好友
 [social] Bob在Alice好友列表中: 通过
 [social] 自己和自己互为好友: 通过
-[social] 创建测试帖子: 通过 - public=908, friends_only=909, private=910
+[social] 创建测试帖子: 通过 - public=1, friends_only=2, private=3
 [social] 作者查看公开帖: 通过
 [social] 作者查看好友可见帖: 通过
 [social] 作者查看私密帖: 通过
@@ -120,7 +120,7 @@
 ============================================================
 5.7 群聊管理
 ============================================================
-[groups] 创建群聊: 通过 - group_id=20
+[groups] 创建群聊: 通过 - group_id=1
 [groups] 空名称创建群聊（应失败）: 通过
 [groups] 群主添加成员: 通过
 [groups] 非群主添加成员（应失败）: 通过
@@ -170,7 +170,7 @@
 [social] Bob 被封禁状态: 通过
 [social] 封禁后无法关注: 通过 - 结果=banned
 [social] admin 查看封禁列表: 通过 - 共1条
-[social] admin 查看审核日志: 通过 - 共12条
+[social] admin 查看审核日志: 通过 - 共2条
 [social] admin 解封 Bob: 通过
 [social] Bob 已解封: 通过
 [social] 解封后恢复关注: 通过
@@ -179,23 +179,23 @@
 ============================================================
 5.11 管理员审核搜索
 ============================================================
-[search] admin 审核搜索: 通过 - 找到10条
+[search] admin 审核搜索: 通过 - 找到2条
 [search] normal 审核搜索（应失败）: 通过
 
 ============================================================
 5.12 管理员解散群聊
 ============================================================
-[groups] Bob 创建群聊供测试: 通过 - group_id=21
+[groups] Bob 创建群聊供测试: 通过 - group_id=2
 [groups] admin 解散他人群聊: 通过
 [groups] normal 解散他人群聊（应失败）: 通过
 
 ============================================================
 6. 私信发送和接收
 ============================================================
-[direct_message] 创建Alice-Bob会话: 通过 - 结果=exists, conv_id=19
+[direct_message] 创建Alice-Bob会话: 通过 - 结果=exists, conv_id=1
 [direct_message] 重复创建会话（应返回exists）: 通过 - 结果=exists
-[direct_message] Alice发送私信: 通过 - 结果=sent, post_id=914
-[direct_message] Bob回复私信: 通过 - 结果=sent, post_id=915
+[direct_message] Alice发送私信: 通过 - 结果=sent, post_id=7
+[direct_message] Bob回复私信: 通过 - 结果=sent, post_id=8
 [direct_message] 获取会话消息列表: 通过 - 共2条消息
 [direct_message] 消息内容验证: 通过
 [direct_message] 获取Alice的会话列表: 通过 - 共1条会话
@@ -208,15 +208,15 @@
 7. 全文搜索
 ============================================================
 [search] 初始化FTS5索引: 通过 - 结果=fts_initialized
-[search] 搜索帖子（关键词：公开）: 通过 - 找到12条
+[search] 搜索帖子（关键词：公开）: 通过 - 找到1条
 [search] 按时间排序搜索帖子: 通过 - 找到0条
 [search] 按热度排序搜索帖子: 通过 - 找到0条
-[search] 搜索用户（关键词：alice）: 通过 - 找到18条
-[search] 搜索标签（关键词：测试）: 通过 - 找到1条
-[search] 按标签搜索帖子: 通过 - 找到7条
-[search] 混合搜索: 通过 - posts=6, users=18, tags=1
-[search] 高级搜索（关键词+可见性）: 通过 - 找到10条
-[search] 搜索建议（前缀：al）: 通过 - tags=1, users=8
+[search] 搜索用户（关键词：alice）: 通过 - 找到1条
+[search] 搜索标签（关键词：测试）: 通过 - 找到0条
+[search] 按标签搜索帖子: 通过 - 找到0条
+[search] 混合搜索: 通过 - posts=0, users=1, tags=0
+[search] 高级搜索（关键词+可见性）: 通过 - 找到1条
+[search] 搜索建议（前缀：al）: 通过 - tags=0, users=1
 [search] 空查询搜索（应返回空列表）: 通过
 
 ============================================================
@@ -226,4 +226,4 @@
 通过: 160
 失败: 0
 通过率: 100.0%
-测试时间: 2026-07-07 23:23:55
+测试时间: 2026-07-08 14:25:24

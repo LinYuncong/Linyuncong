@@ -37,23 +37,25 @@ def init_fts():
     """)#使用外部索引表，FTS只存索引
 
     # 触发器：插入帖子时同步 FTS
-    conn.executescript("""
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
             INSERT INTO posts_fts(rowid, content, spoiler_text)
             VALUES (new.id, new.content, new.spoiler_text);
-        END;
-
+        END
+    """)
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS posts_ad AFTER DELETE ON posts BEGIN
             INSERT INTO posts_fts(posts_fts, rowid, content, spoiler_text)
             VALUES ('delete', old.id, old.content, old.spoiler_text);
-        END;
-
+        END
+    """)
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
             INSERT INTO posts_fts(posts_fts, rowid, content, spoiler_text)
             VALUES ('delete', old.id, old.content, old.spoiler_text);
             INSERT INTO posts_fts(rowid, content, spoiler_text)
             VALUES (new.id, new.content, new.spoiler_text);
-        END;
+        END
     """)#三个触发器分别对应INSERT,DELETE,UPDATE
 
     # --- 用户 FTS 索引 ---
@@ -67,23 +69,25 @@ def init_fts():
         )
     """)
 
-    conn.executescript("""
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS users_ai AFTER INSERT ON users BEGIN
             INSERT INTO users_fts(rowid, username, display_name, note)
             VALUES (new.id, new.username, new.display_name, new.note);
-        END;
-
+        END
+    """)
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS users_ad AFTER DELETE ON users BEGIN
             INSERT INTO users_fts(users_fts, rowid, username, display_name, note)
             VALUES ('delete', old.id, old.username, old.display_name, old.note);
-        END;
-
+        END
+    """)
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS users_au AFTER UPDATE ON users BEGIN
             INSERT INTO users_fts(users_fts, rowid, username, display_name, note)
             VALUES ('delete', old.id, old.username, old.display_name, old.note);
             INSERT INTO users_fts(rowid, username, display_name, note)
             VALUES (new.id, new.username, new.display_name, new.note);
-        END;
+        END
     """)
 
     # --- 标签 FTS 索引 ---
@@ -95,19 +99,21 @@ def init_fts():
         )
     """)
 
-    conn.executescript("""
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS tags_ai AFTER INSERT ON tags BEGIN
             INSERT INTO tags_fts(rowid, name) VALUES (new.id, new.name);
-        END;
-
+        END
+    """)
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS tags_ad AFTER DELETE ON tags BEGIN
             INSERT INTO tags_fts(tags_fts, rowid, name) VALUES ('delete', old.id, old.name);
-        END;
-
+        END
+    """)
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS tags_au AFTER UPDATE ON tags BEGIN
             INSERT INTO tags_fts(tags_fts, rowid, name) VALUES ('delete', old.id, old.name);
             INSERT INTO tags_fts(rowid, name) VALUES (new.id, new.name);
-        END;
+        END
     """)
 
     # 初始化：将已有数据同步到 FTS
@@ -353,8 +359,17 @@ def advanced_search(keyword: str | None = None,
     params: list = []
 
     if keyword:
-        conditions.append("p.id IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)")
-        params.append(_sanitize_query(keyword))
+        # 如果 FTS 表不存在，回退到 LIKE 搜索
+        fts_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='posts_fts'"
+        ).fetchone()
+        if fts_exists:
+            conditions.append("p.id IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)")
+            params.append(_sanitize_query(keyword))
+        else:
+            conditions.append("(p.content LIKE ? OR p.spoiler_text LIKE ?)")
+            like_pattern = f"%{keyword}%"
+            params.extend([like_pattern, like_pattern])
 
     if author_id:
         conditions.append("p.author_id = ?")
@@ -468,8 +483,17 @@ def moderation_search(keyword: str | None = None,
     conditions.append(f"p.visibility IN ({','.join(visibilities)})")
 
     if keyword:
-        conditions.append("p.id IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)")
-        params.append(_sanitize_query(keyword))
+        # 如果 FTS 表不存在，回退到 LIKE 搜索
+        fts_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='posts_fts'"
+        ).fetchone()
+        if fts_exists:
+            conditions.append("p.id IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)")
+            params.append(_sanitize_query(keyword))
+        else:
+            conditions.append("(p.content LIKE ? OR p.spoiler_text LIKE ?)")
+            like_pattern = f"%{keyword}%"
+            params.extend([like_pattern, like_pattern])
 
     where = " AND ".join(conditions)
 

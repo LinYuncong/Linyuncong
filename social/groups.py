@@ -30,22 +30,24 @@ def _ensure_tables():
     if _tables_created:
         return
     conn = get_conn()
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             owner_id INTEGER NOT NULL,
             created_at TEXT NOT NULL
-        );
-
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_group_members (
             group_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             can_modify_files INTEGER DEFAULT 0,
             joined_at TEXT NOT NULL,
             PRIMARY KEY(group_id, user_id)
-        );
-
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             group_id INTEGER NOT NULL,
@@ -53,7 +55,7 @@ def _ensure_tables():
             message_type TEXT DEFAULT 'text',
             content TEXT DEFAULT '',
             created_at TEXT NOT NULL
-        );
+        )
     """)
     _tables_created = True
 

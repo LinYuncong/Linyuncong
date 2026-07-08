@@ -445,9 +445,9 @@ def _create_test_post(author_id, content, visibility="public"):
     conn = get_conn()
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
     cur = conn.execute("""
-        INSERT INTO posts (content, spoiler_text, sensitive, visibility, language, author_id, created_at)
-        VALUES (?, '', 0, ?, '', ?, ?)
-    """, (content, visibility, author_id, now))
+        INSERT INTO posts (content, spoiler_text, sensitive, visibility, language, author_id, created_at, updated_at)
+        VALUES (?, '', 0, ?, '', ?, ?, ?)
+    """, (content, visibility, author_id, now, now))
     conn.commit()
     return cur.lastrowid
 

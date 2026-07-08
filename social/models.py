@@ -60,6 +60,61 @@ def _migrate_role_column():
     conn.commit()
 
 
+_user_migration_done = False
+
+
+def _ensure_user_migration():
+    global _user_migration_done
+    if _user_migration_done:
+        return
+    conn = get_conn()
+
+    # 确保 users 基础表存在（独立运行兼容；与 main 共存时表已存在则不操作）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT,
+            password_hash TEXT NOT NULL,
+            nickname TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            acct TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            locked INTEGER NOT NULL DEFAULT 0,
+            bot INTEGER NOT NULL DEFAULT 0,
+            limited INTEGER NOT NULL DEFAULT 0,
+            avatar TEXT NOT NULL DEFAULT '',
+            header TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'normal',
+            fields TEXT NOT NULL DEFAULT '[]',
+            default_privacy TEXT NOT NULL DEFAULT 'public',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT '',
+            followers_count INTEGER NOT NULL DEFAULT 0,
+            following_count INTEGER NOT NULL DEFAULT 0,
+            last_status_at TEXT NOT NULL DEFAULT '',
+            statuses_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    # Ensure role column exists（兼容旧表）
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'normal'")
+    except sqlite3.OperationalError:
+        pass
+    # Ensure display_name column exists（兼容旧表）
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # Update existing users: set display_name = nickname if display_name is empty
+    conn.execute("UPDATE users SET display_name = nickname WHERE display_name = '' OR display_name IS NULL")
+    conn.commit()
+    _user_migration_done = True
+
+
 @transactional
 def set_user_role(target_id: int, role: str, admin_id: int) -> dict:
     """
@@ -138,6 +193,7 @@ def get_user_by_email(email: str) -> dict | None:
 def create_user(username: str,
                 email: str,
                 password_hash: str,
+                nickname: str = "",
                 display_name: str = "",
                 acct: str | None = None,
                 note: str = "",
@@ -147,23 +203,24 @@ def create_user(username: str,
                 header: str = "",
                 default_privacy: str = "public",
                 language: str = "zh-CN") -> dict:
-    """创建新用户"""
+    """创建新用户（兼容 main 的 nickname 字段和 social 的 display_name 字段）"""
     conn = get_conn()
     now = _now()
+    _name = nickname or display_name or username
 
     try:
         cursor = conn.execute("""
             INSERT INTO users
-            (username, email, password_hash, display_name, acct, note,
+            (username, email, password_hash, nickname, display_name, acct, note,
              locked, bot, avatar, header, default_privacy, language,
-             created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             role, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            username, email, password_hash, display_name,
-            acct or username, note,
+            username, email, password_hash, _name,
+            _name, acct or username, note,
             int(locked), int(bot), avatar, header,
-            default_privacy, language, now, now
-        ))#若acct为空，则acct=username
+            default_privacy, language, 'normal', now, now
+        ))
         return {"status": "created", "id": cursor.lastrowid}
     except Exception as e:
         if "UNIQUE" in str(e):
@@ -176,7 +233,7 @@ def update_user(user_id: int, **kwargs) -> dict:
     """更新用户字段"""
     conn = get_conn()
     allowed = [
-        "display_name", "note", "locked", "bot", "limited",
+        "nickname", "display_name", "note", "locked", "bot", "limited",
         "avatar", "header", "url", "role", "fields",
         "default_privacy", "language", "last_status_at"
     ]#只允许修改白名单内的内容
@@ -264,3 +321,10 @@ def get_post(post_id: int, viewer_id: int | None = None) -> dict | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+# 首次导入时确保 migration 完成
+try:
+    _ensure_user_migration()
+except Exception:
+    pass

@@ -2,9 +2,13 @@
 数据库连接：将数据保存到磁盘，用SQL高效查询，支持并发，保证数据完整性
 事务管理：保证原子性，保证事务前后数据库始终满足约束，并发事务互不干扰，提交事务后永久保存修改
 """
+import os
 import sqlite3
 import threading
-DB_PATH = r"c:\Users\lyc\Desktop\work\social.db"#用r防止反斜杠转义出错
+
+# 数据库路径：优先使用环境变量 TINYBLOG_DB，否则使用项目根目录的 main.db
+# 环境变量示例：export TINYBLOG_DB=/path/to/main.db
+DB_PATH = os.environ.get("TINYBLOG_DB", "main.db")
 
 _local = threading.local()#各线程不共享数据
 

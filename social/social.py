@@ -9,6 +9,340 @@ from social.db import get_conn, transactional
 
 
 # ---------------------------------------------------------------------------
+# 模块级标志 & 表结构保障
+# ---------------------------------------------------------------------------
+
+_social_tables_created = False
+
+
+def _ensure_social_tables():
+    """
+    确保 social 模块所需的所有表、视图、列存在。
+    兼容 main.db 的现有结构：添加缺失列、创建 VIEW、创建新表。
+    也支持独立运行：在没有 main.db 的情况下创建基础表。
+    """
+    global _social_tables_created
+    if _social_tables_created:
+        return
+    conn = get_conn()
+
+    # -- 创建基础表（独立运行时所需，与 main 共存时这些表已存在） --
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT,
+            password_hash TEXT NOT NULL,
+            nickname TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            acct TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            locked INTEGER NOT NULL DEFAULT 0,
+            bot INTEGER NOT NULL DEFAULT 0,
+            limited INTEGER NOT NULL DEFAULT 0,
+            avatar TEXT NOT NULL DEFAULT '',
+            header TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'normal',
+            fields TEXT NOT NULL DEFAULT '[]',
+            default_privacy TEXT NOT NULL DEFAULT 'public',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT '',
+            followers_count INTEGER NOT NULL DEFAULT 0,
+            following_count INTEGER NOT NULL DEFAULT 0,
+            last_status_at TEXT NOT NULL DEFAULT '',
+            statuses_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS following (
+            follower INTEGER NOT NULL,
+            followee INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (follower, followee)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            author_id INTEGER NOT NULL,
+            content TEXT,
+            visibility TEXT NOT NULL DEFAULT 'public',
+            sensitive INTEGER NOT NULL DEFAULT 0,
+            spoiler_text TEXT DEFAULT '',
+            language TEXT DEFAULT 'zh-CN',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            in_reply_to_id INTEGER DEFAULT NULL,
+            favourites_count INTEGER NOT NULL DEFAULT 0,
+            reblogs_count INTEGER NOT NULL DEFAULT 0,
+            replies_count INTEGER NOT NULL DEFAULT 0,
+            edited_at TEXT DEFAULT NULL,
+            url TEXT DEFAULT '',
+            application_name TEXT DEFAULT '',
+            publisher_id INTEGER DEFAULT NULL,
+            like_num INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            url TEXT DEFAULT '',
+            total_uses INTEGER NOT NULL DEFAULT 0,
+            total_accounts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS post_tags (
+            post_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY (post_id, tag_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS post_mentions (
+            post_id INTEGER NOT NULL,
+            mentioned_user_id INTEGER NOT NULL,
+            PRIMARY KEY (post_id, mentioned_user_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS media_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            type TEXT NOT NULL DEFAULT 'image',
+            url TEXT NOT NULL DEFAULT '',
+            description TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS blocks (
+            user_id INTEGER NOT NULL,
+            blocked_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, blocked_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            last_post_id INTEGER DEFAULT NULL,
+            is_unread INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_participants (
+            conversation_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            UNIQUE(conversation_id, user_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            sender_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            media_ids TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    # -- 为 users 表添加缺失列（兼容 main 的 users 表） --
+    _user_cols = {
+        "display_name":     "TEXT NOT NULL DEFAULT ''",
+        "acct":             "TEXT NOT NULL DEFAULT ''",
+        "note":             "TEXT NOT NULL DEFAULT ''",
+        "locked":           "INTEGER NOT NULL DEFAULT 0",
+        "bot":              "INTEGER NOT NULL DEFAULT 0",
+        "limited":          "INTEGER NOT NULL DEFAULT 0",
+        "header":           "TEXT NOT NULL DEFAULT ''",
+        "url":              "TEXT NOT NULL DEFAULT ''",
+        "role":             "TEXT NOT NULL DEFAULT 'normal'",
+        "fields":           "TEXT NOT NULL DEFAULT '[]'",
+        "default_privacy":  "TEXT NOT NULL DEFAULT 'public'",
+        "language":         "TEXT NOT NULL DEFAULT 'zh-CN'",
+        "created_at":       "TEXT NOT NULL DEFAULT ''",
+        "updated_at":       "TEXT NOT NULL DEFAULT ''",
+        "followers_count":  "INTEGER NOT NULL DEFAULT 0",
+        "following_count":  "INTEGER NOT NULL DEFAULT 0",
+        "last_status_at":   "TEXT NOT NULL DEFAULT ''",
+        "statuses_count":   "INTEGER NOT NULL DEFAULT 0",
+    }
+    existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    for col_name, col_def in _user_cols.items():
+        if col_name not in existing_cols:
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}")
+            except sqlite3.OperationalError:
+                pass
+
+    # -- 为 posts 表添加缺失列 --
+    _posts_cols = {
+        "in_reply_to_id":    "INTEGER DEFAULT NULL",
+        "favourites_count":  "INTEGER NOT NULL DEFAULT 0",
+        "reblogs_count":     "INTEGER NOT NULL DEFAULT 0",
+        "replies_count":     "INTEGER NOT NULL DEFAULT 0",
+        "edited_at":         "TEXT DEFAULT NULL",
+        "url":               "TEXT DEFAULT ''",
+        "application_name":  "TEXT DEFAULT ''",
+        "publisher_id":      "INTEGER DEFAULT NULL",
+        "like_num":          "INTEGER NOT NULL DEFAULT 0",
+    }
+    try:
+        existing_posts_cols = [r[1] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
+        for col_name, col_def in _posts_cols.items():
+            if col_name not in existing_posts_cols:
+                try:
+                    conn.execute(f"ALTER TABLE posts ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass
+    except sqlite3.OperationalError:
+        pass
+
+    # -- 为 conversations 表添加缺失列 --
+    try:
+        existing_conv_cols = [r[1] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
+        for col_name, col_def in [("last_post_id", "INTEGER DEFAULT NULL"), ("is_unread", "INTEGER NOT NULL DEFAULT 0")]:
+            if col_name not in existing_conv_cols:
+                try:
+                    conn.execute(f"ALTER TABLE conversations ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass
+    except sqlite3.OperationalError:
+        pass
+
+    # -- 为 notifications 表添加缺失列 --
+    try:
+        existing_notif_cols = [r[1] for r in conn.execute("PRAGMA table_info(notifications)").fetchall()]
+        for col_name, col_def in [
+            ("report_data", "TEXT DEFAULT NULL"),
+            ("relationship_severance", "TEXT DEFAULT NULL"),
+            ("moderation_warning", "TEXT DEFAULT NULL"),
+            ("annual_report", "TEXT DEFAULT NULL"),
+        ]:
+            if col_name not in existing_notif_cols:
+                try:
+                    conn.execute(f"ALTER TABLE notifications ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass
+    except sqlite3.OperationalError:
+        pass
+
+    # -- 为 tags 表添加缺失列 --
+    try:
+        existing_tags_cols = [r[1] for r in conn.execute("PRAGMA table_info(tags)").fetchall()]
+        for col_name, col_def in [
+            ("total_uses", "INTEGER NOT NULL DEFAULT 0"),
+            ("total_accounts", "INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "TEXT NOT NULL DEFAULT ''"),
+        ]:
+            if col_name not in existing_tags_cols:
+                try:
+                    conn.execute(f"ALTER TABLE tags ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass
+    except sqlite3.OperationalError:
+        pass
+
+    # -- 创建 follows 真实表（兼容 main 的 following 表） --
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS follows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            follower_id INTEGER NOT NULL,
+            following_id INTEGER NOT NULL,
+            show_reblogs INTEGER NOT NULL DEFAULT 1,
+            notify INTEGER NOT NULL DEFAULT 0,
+            languages TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            UNIQUE(follower_id, following_id)
+        )
+    """)
+    # 同步数据：将 following 中已有的关系同步到 follows
+    conn.execute("""
+        INSERT OR IGNORE INTO follows (follower_id, following_id, created_at)
+        SELECT follower, followee, created_at FROM following
+    """)
+
+    # -- 创建 main 中不存在的表 --
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mutes (
+            user_id INTEGER NOT NULL,
+            muted_id INTEGER NOT NULL,
+            mute_notifications INTEGER NOT NULL DEFAULT 1,
+            expire_at TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, muted_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS domain_blocks (
+            user_id INTEGER NOT NULL,
+            domain TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, domain)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            notification_type TEXT NOT NULL,
+            from_user_id INTEGER,
+            post_id INTEGER,
+            detail TEXT DEFAULT '',
+            report_data TEXT DEFAULT NULL,
+            relationship_severance TEXT DEFAULT NULL,
+            moderation_warning TEXT DEFAULT NULL,
+            annual_report TEXT DEFAULT NULL,
+            created_at TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS follow_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(account_id, target_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            endpoint TEXT NOT NULL,
+            p256dh_key TEXT NOT NULL,
+            auth_key TEXT NOT NULL,
+            alerts TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT '',
+            UNIQUE(user_id, endpoint)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_accounts (
+            conversation_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            UNIQUE(conversation_id, user_id)
+        )
+    """)
+
+    # -- 调用已有的 _ensure_* 函数 --
+    _ensure_visibility_table()
+    _ensure_friend_group_tables()
+    _ensure_reaction_tables()
+    _ensure_moderation_tables()
+
+    _social_tables_created = True
+
+
+# ---------------------------------------------------------------------------
 # 关注 & 取关
 # ---------------------------------------------------------------------------
 
@@ -20,6 +354,7 @@ def follow(follower_id: int, following_id: int, show_reblogs: bool = True,
     如果目标用户设置了 locked=1，则创建关注请求而非直接关注。
     返回 {"status": "followed" | "requested" | "blocked"}
     """
+    _ensure_social_tables()
     conn = get_conn()
     now = _now()
 
@@ -68,13 +403,21 @@ def follow(follower_id: int, following_id: int, show_reblogs: bool = True,
                              from_user_id=follower_id, created_at=now)
         return {"status": "requested"}
 
-    # 直接关注
+    # 直接关注（写入 follows 表 + 同步到 main 的 following 表）
     conn.execute(
         "INSERT INTO follows (follower_id, following_id, show_reblogs, notify, languages, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (follower_id, following_id, int(show_reblogs), int(notify),
          _json(languages or []), now)
     )
+    # 同步到 main 的 following 表
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO following (follower, followee, created_at) VALUES (?, ?, ?)",
+            (follower_id, following_id, now)
+        )
+    except sqlite3.OperationalError:
+        pass
 
     # 更新计数器
     _incr(conn, "users", "following_count", follower_id)
@@ -88,6 +431,7 @@ def follow(follower_id: int, following_id: int, show_reblogs: bool = True,
 @transactional
 def unfollow(follower_id: int, following_id: int) -> dict:
     """取关一个用户"""
+    _ensure_social_tables()
     conn = get_conn()
 
     deleted = conn.execute(
@@ -96,6 +440,14 @@ def unfollow(follower_id: int, following_id: int) -> dict:
     ).rowcount
 
     if deleted:
+        # 同步删除 main 的 following 表
+        try:
+            conn.execute(
+                "DELETE FROM following WHERE follower = ? AND followee = ?",
+                (follower_id, following_id)
+            )
+        except sqlite3.OperationalError:
+            pass
         _decr(conn, "users", "following_count", follower_id)
         _decr(conn, "users", "followers_count", following_id)
 
@@ -134,6 +486,14 @@ def accept_follow_request(request_id: int, user_id: int) -> dict:
             "INSERT INTO follows (follower_id, following_id, created_at) VALUES (?, ?, ?)",
             (req["account_id"], req["target_id"], now)
         )
+        # 同步到 main 的 following 表
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO following (follower, followee, created_at) VALUES (?, ?, ?)",
+                (req["account_id"], req["target_id"], now)
+            )
+        except sqlite3.OperationalError:
+            pass
     except sqlite3.IntegrityError:
         return {"status": "already_following"}
 
@@ -149,6 +509,7 @@ def accept_follow_request(request_id: int, user_id: int) -> dict:
 @transactional
 def reject_follow_request(request_id: int, user_id: int) -> dict:
     """拒绝关注请求"""
+    _ensure_social_tables()
     conn = get_conn()
     deleted = conn.execute(
         "DELETE FROM follow_requests WHERE id = ? AND target_id = ?",
@@ -163,6 +524,7 @@ def reject_follow_request(request_id: int, user_id: int) -> dict:
 
 def get_followers(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
     """获取粉丝列表"""
+    _ensure_social_tables()
     conn = get_conn()
     rows = conn.execute("""
         SELECT u.id, u.username, u.display_name, u.acct, u.avatar, u.note,
@@ -178,6 +540,7 @@ def get_followers(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
 
 def get_following(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
     """获取关注列表"""
+    _ensure_social_tables()
     conn = get_conn()
     rows = conn.execute("""
         SELECT u.id, u.username, u.display_name, u.acct, u.avatar, u.note,
@@ -193,6 +556,7 @@ def get_following(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
 
 def is_following(follower_id: int, following_id: int) -> bool:
     """检查是否已关注"""
+    _ensure_social_tables()
     conn = get_conn()
     return conn.execute(
         "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
@@ -202,6 +566,7 @@ def is_following(follower_id: int, following_id: int) -> bool:
 
 def get_follow_requests(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
     """获取待处理的关注请求"""
+    _ensure_social_tables()
     conn = get_conn()
     rows = conn.execute("""
         SELECT fr.id, fr.account_id, fr.created_at,
@@ -225,6 +590,7 @@ def block(user_id: int, blocked_id: int) -> dict:
     屏蔽一个用户。
     副作用：自动取关（双向），移除粉丝关系，删除关注请求。
     """
+    _ensure_social_tables()
     conn = get_conn()
 
     if user_id == blocked_id:
@@ -250,6 +616,13 @@ def block(user_id: int, blocked_id: int) -> dict:
         if deleted:
             _decr(conn, "users", "following_count", a)
             _decr(conn, "users", "followers_count", b)
+            # 同步删除 main 的 following 表
+            try:
+                conn.execute(
+                    "DELETE FROM following WHERE follower = ? AND followee = ?", (a, b)
+                )
+            except sqlite3.OperationalError:
+                pass
 
     # 删除关注请求
     conn.execute(
@@ -263,6 +636,7 @@ def block(user_id: int, blocked_id: int) -> dict:
 @transactional
 def unblock(user_id: int, blocked_id: int) -> dict:
     """取消屏蔽"""
+    _ensure_social_tables()
     conn = get_conn()
     deleted = conn.execute(
         "DELETE FROM blocks WHERE user_id = ? AND blocked_id = ?",
@@ -288,6 +662,7 @@ def get_blocked(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
 
 def is_blocked(user_id: int, target_id: int) -> bool:
     """检查是否已屏蔽"""
+    _ensure_social_tables()
     conn = get_conn()
     return conn.execute(
         "SELECT 1 FROM blocks WHERE user_id = ? AND blocked_id = ?",
@@ -307,6 +682,7 @@ def mute(user_id: int, muted_id: int, mute_notifications: bool = True,
     - mute_notifications: 是否同时静音通知
     - expire_at: ISO 格式过期时间，None 表示永久
     """
+    _ensure_social_tables()
     conn = get_conn()
 
     if user_id == muted_id:
@@ -326,6 +702,7 @@ def mute(user_id: int, muted_id: int, mute_notifications: bool = True,
 @transactional
 def unmute(user_id: int, muted_id: int) -> dict:
     """取消静音"""
+    _ensure_social_tables()
     conn = get_conn()
     deleted = conn.execute(
         "DELETE FROM mutes WHERE user_id = ? AND muted_id = ?",
@@ -336,6 +713,7 @@ def unmute(user_id: int, muted_id: int) -> dict:
 
 def get_muted(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
     """获取静音列表"""
+    _ensure_social_tables()
     conn = get_conn()
     rows = conn.execute("""
         SELECT u.id, u.username, u.display_name, u.acct, u.avatar,
@@ -351,6 +729,7 @@ def get_muted(user_id: int, limit: int = 40, offset: int = 0) -> list[dict]:
 
 def is_muted(user_id: int, target_id: int) -> bool:
     """检查是否已静音"""
+    _ensure_social_tables()
     conn = get_conn()
     return conn.execute(
         "SELECT 1 FROM mutes WHERE user_id = ? AND muted_id = ?",
@@ -365,6 +744,7 @@ def is_muted(user_id: int, target_id: int) -> bool:
 @transactional
 def domain_block(user_id: int, domain: str) -> dict:
     """屏蔽整个域名"""
+    _ensure_social_tables()
     conn = get_conn()
     try:
         conn.execute(
@@ -379,6 +759,7 @@ def domain_block(user_id: int, domain: str) -> dict:
 @transactional
 def domain_unblock(user_id: int, domain: str) -> dict:
     """取消域名屏蔽"""
+    _ensure_social_tables()
     conn = get_conn()
     deleted = conn.execute(
         "DELETE FROM domain_blocks WHERE user_id = ? AND domain = ?",
@@ -389,6 +770,7 @@ def domain_unblock(user_id: int, domain: str) -> dict:
 
 def get_domain_blocks(user_id: int) -> list[dict]:
     """获取域名屏蔽列表"""
+    _ensure_social_tables()
     conn = get_conn()
     rows = conn.execute(
         "SELECT domain, created_at FROM domain_blocks WHERE user_id = ? ORDER BY created_at DESC",
@@ -405,6 +787,7 @@ def are_friends(user_a_id: int, user_b_id: int) -> bool:
     """判断两个用户是否为好友（互相关注）。粉丝和关注都属于好友。"""
     if user_a_id == user_b_id:
         return True
+    _ensure_social_tables()
     conn = get_conn()
     a_follows_b = conn.execute(
         "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
@@ -419,6 +802,7 @@ def are_friends(user_a_id: int, user_b_id: int) -> bool:
 
 def get_friends(user_id: int, limit: int = 100, offset: int = 0) -> list[dict]:
     """获取好友列表（互相关注的用户，粉丝和关注都属于好友）"""
+    _ensure_social_tables()
     conn = get_conn()
     rows = conn.execute("""
         SELECT u.id, u.username, u.display_name, u.acct, u.avatar, u.note
@@ -588,20 +972,22 @@ def _ensure_friend_group_tables():
     if _friend_group_tables_created:
         return
     conn = get_conn()
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS friend_groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             created_at TEXT NOT NULL,
             UNIQUE(user_id, name)
-        );
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS friend_group_members (
             group_id INTEGER NOT NULL,
             friend_id INTEGER NOT NULL,
             added_at TEXT NOT NULL,
             PRIMARY KEY(group_id, friend_id)
-        );
+        )
     """)
     _friend_group_tables_created = True
 
@@ -711,21 +1097,23 @@ def _ensure_reaction_tables():
     if _reaction_tables_created:
         return
     conn = get_conn()
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS user_tag_interests (
             user_id INTEGER NOT NULL,
             tag_name TEXT NOT NULL,
             weight REAL DEFAULT 1.0,
             updated_at TEXT NOT NULL,
             PRIMARY KEY(user_id, tag_name)
-        );
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS post_reactions (
             user_id INTEGER NOT NULL,
             post_id INTEGER NOT NULL,
             reaction_type TEXT NOT NULL DEFAULT 'not_interested',
             created_at TEXT NOT NULL,
             PRIMARY KEY(user_id, post_id, reaction_type)
-        );
+        )
     """)
     _reaction_tables_created = True
 
@@ -741,8 +1129,8 @@ def recommend_users(user_id: int, limit: int = 20) -> list[dict]:
       4. 排除：自己、已是好友、已屏蔽/被屏蔽
     """
     conn = get_conn()
+    _ensure_social_tables()
     _ensure_reaction_tables()
-
     # 排除列表：自己 + 已关注 + 已屏蔽 + 被屏蔽
     exclude_sql = """
         SELECT u2.id FROM users u2 WHERE u2.id = ?
@@ -800,6 +1188,7 @@ def recommend_posts(user_id: int, limit: int = 20, offset: int = 0) -> list[dict
       5. 按匹配权重排序，考虑可见性
     """
     conn = get_conn()
+    _ensure_social_tables()
     _ensure_reaction_tables()
 
     # 获取用户兴趣标签
@@ -1335,6 +1724,8 @@ def _create_notification(conn, user_id: int, ntype: str,
     创建通知。
     自动跳过：被静音、被屏蔽、自己对自己的通知。
     """
+    _ensure_social_tables()
+
     if from_user_id == user_id:
         return  # 不给自己发通知
 

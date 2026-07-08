@@ -1,6 +1,5 @@
 """
 社交网络平台 - 核心业务模块
-
 ├── db.py            数据库连接 & 事务管理
 ├── direct_message.py 私信 / 会话管理
 ├── models.py        用户 & 帖子 CRUD 辅助函数

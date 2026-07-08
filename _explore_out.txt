@@ -1,0 +1,5 @@
+D: .git/ (4 items) - ['hooks', 'info', 'objects', 'refs']
+  - hooks/
+  - info/
+  - objects/
+  - refs/
